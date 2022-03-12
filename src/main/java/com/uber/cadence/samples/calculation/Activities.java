@@ -15,8 +15,14 @@
  *  permissions and limitations under the License.
  */
 
-package com.uber.cadence.samples.common;
+package com.uber.cadence.samples.calculation;
 
-public class SampleConstants {
-  public static final String DOMAIN = "samples-domain";
+public interface Activities {
+
+  /**
+   * @param a
+   * @param b
+   * @return a*b
+   */
+  long multiple(long a, long b);
 }

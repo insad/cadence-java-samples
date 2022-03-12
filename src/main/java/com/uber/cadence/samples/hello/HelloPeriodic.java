@@ -26,9 +26,13 @@ import com.uber.cadence.activity.Activity;
 import com.uber.cadence.activity.ActivityOptions;
 import com.uber.cadence.client.DuplicateWorkflowException;
 import com.uber.cadence.client.WorkflowClient;
+import com.uber.cadence.client.WorkflowClientOptions;
 import com.uber.cadence.client.WorkflowException;
 import com.uber.cadence.client.WorkflowStub;
+import com.uber.cadence.serviceclient.ClientOptions;
+import com.uber.cadence.serviceclient.WorkflowServiceTChannel;
 import com.uber.cadence.worker.Worker;
+import com.uber.cadence.worker.WorkerFactory;
 import com.uber.cadence.workflow.Workflow;
 import com.uber.cadence.workflow.WorkflowMethod;
 import java.time.Duration;
@@ -117,8 +121,15 @@ public class HelloPeriodic {
   }
 
   public static void main(String[] args) throws InterruptedException {
-    // Start a worker that hosts both workflow and activity implementations.
-    Worker.Factory factory = new Worker.Factory(DOMAIN);
+    // Get a new client
+    // NOTE: to set a different options, you can do like this:
+    // ClientOptions.newBuilder().setRpcTimeout(5 * 1000).build();
+    WorkflowClient workflowClient =
+        WorkflowClient.newInstance(
+            new WorkflowServiceTChannel(ClientOptions.defaultInstance()),
+            WorkflowClientOptions.newBuilder().setDomain(DOMAIN).build());
+    // Get worker to poll the task list.
+    WorkerFactory factory = WorkerFactory.newInstance(workflowClient);
     Worker worker = factory.newWorker(TASK_LIST);
     // Workflows are stateful. So you need a type to create instances.
     worker.registerWorkflowImplementationTypes(GreetingWorkflowImpl.class);
@@ -128,7 +139,6 @@ public class HelloPeriodic {
     factory.start();
 
     // Start a workflow execution. Usually this is done from another program.
-    WorkflowClient workflowClient = WorkflowClient.newInstance(DOMAIN);
     // To ensure that this daemon type workflow is always running try to start it periodically
     // ignoring the duplicated exception.
     // It is only to protect from application level failures.

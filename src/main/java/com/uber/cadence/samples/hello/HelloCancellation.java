@@ -19,42 +19,48 @@ package com.uber.cadence.samples.hello;
 
 import static com.uber.cadence.samples.common.SampleConstants.DOMAIN;
 
-import com.uber.cadence.activity.ActivityOptions;
+import com.uber.cadence.activity.ActivityMethod;
 import com.uber.cadence.client.WorkflowClient;
 import com.uber.cadence.client.WorkflowClientOptions;
 import com.uber.cadence.client.WorkflowOptions;
+import com.uber.cadence.client.WorkflowStub;
 import com.uber.cadence.serviceclient.ClientOptions;
 import com.uber.cadence.serviceclient.WorkflowServiceTChannel;
 import com.uber.cadence.worker.Worker;
 import com.uber.cadence.worker.WorkerFactory;
-import com.uber.cadence.workflow.Async;
-import com.uber.cadence.workflow.Promise;
+import com.uber.cadence.workflow.CancellationScope;
 import com.uber.cadence.workflow.Workflow;
 import com.uber.cadence.workflow.WorkflowMethod;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CancellationException;
 
 /**
- * Demonstrates async invocation of an entire sequence of activities. Requires a local instance of
- * Cadence server to be running.
+ * Demonstrates triggering an activity in response to a cancellation request. Requires a local
+ * instance of Cadence server to be running.
  */
-public class HelloAsyncLambda {
+public class HelloCancellation {
 
-  static final String TASK_LIST = "HelloAsyncLambda";
+  static final String TASK_LIST = "HelloCancellation";
 
+  /** Workflow interface has to have at least one method annotated with @WorkflowMethod. */
   public interface GreetingWorkflow {
     /** @return greeting string */
-    @WorkflowMethod
+    @WorkflowMethod(executionStartToCloseTimeoutSeconds = 30, taskList = TASK_LIST)
     String getGreeting(String name);
   }
 
-  /** Activity interface is just a POJI. * */
+  /** Activity interface is just a POJI. */
   public interface GreetingActivities {
-    String getGreeting();
-
+    @ActivityMethod(scheduleToCloseTimeoutSeconds = 2)
     String composeGreeting(String greeting, String name);
+
+    @ActivityMethod(scheduleToCloseTimeoutSeconds = 2)
+    String sayGoodbye(String name);
   }
 
-  /** GreetingWorkflow implementation that calls GreetingsActivities#printIt. */
+  /** GreetingWorkflow implementation that calls GreetingsActivities#composeGreeting. */
   public static class GreetingWorkflowImpl implements GreetingWorkflow {
 
     /**
@@ -63,43 +69,48 @@ public class HelloAsyncLambda {
      * activity invocations.
      */
     private final GreetingActivities activities =
-        Workflow.newActivityStub(
-            GreetingActivities.class,
-            new ActivityOptions.Builder()
-                .setScheduleToCloseTimeout(Duration.ofSeconds(10))
-                .build());
+        Workflow.newActivityStub(GreetingActivities.class);
 
     @Override
     public String getGreeting(String name) {
-      // Async.invoke accepts not only activity or child workflow method references
-      // but lambda functions as well. Behind the scene it allocates a thread
-      // to execute it asynchronously.
-      Promise<String> result1 =
-          Async.function(
-              () -> {
-                String greeting = activities.getGreeting();
-                return activities.composeGreeting(greeting, name);
-              });
-      Promise<String> result2 =
-          Async.function(
-              () -> {
-                String greeting = activities.getGreeting();
-                return activities.composeGreeting(greeting, name);
-              });
-      return result1.get() + "\n" + result2.get();
+      try {
+        final String result = activities.composeGreeting("Hello", name);
+        Workflow.sleep(Duration.ofDays(10));
+        return result;
+        // This exception is thrown when a cancellation is requested on the current workflow
+      } catch (CancellationException e) {
+        /**
+         * Any call to an activity or a child workflow after the workflow is cancelled is going to
+         * fail immediately with the CancellationException. the DetachedCancellationScope doesn't
+         * inherit its cancellation status from the enclosing scope. Thus it allows running a
+         * cleanup activity even if the workflow cancellation was requested.
+         */
+        CancellationScope scope =
+            Workflow.newDetachedCancellationScope(() -> activities.sayGoodbye(name));
+        scope.run();
+        throw e;
+      }
     }
   }
 
   static class GreetingActivitiesImpl implements GreetingActivities {
 
-    @Override
-    public String getGreeting() {
-      return "Hello";
-    }
+    private final List<String> invocations = new ArrayList<>();
 
     @Override
     public String composeGreeting(String greeting, String name) {
+      invocations.add("composeGreeting");
       return greeting + " " + name + "!";
+    }
+
+    @Override
+    public String sayGoodbye(String name) {
+      invocations.add("sayGoodbye");
+      return "Goodbye " + name + "!";
+    }
+
+    List<String> getInvocations() {
+      return invocations;
     }
   }
 
@@ -117,21 +128,33 @@ public class HelloAsyncLambda {
     // Workflows are stateful. So you need a type to create instances.
     worker.registerWorkflowImplementationTypes(GreetingWorkflowImpl.class);
     // Activities are stateless and thread safe. So a shared instance is used.
-    worker.registerActivitiesImplementations(new GreetingActivitiesImpl());
+    // A shared instance is used to show activity invocations.
+    GreetingActivitiesImpl activities = new GreetingActivitiesImpl();
+    worker.registerActivitiesImplementations(activities);
     // Start listening to the workflow and activity task lists.
     factory.start();
 
-    // Get a workflow stub using the same task list the worker uses.
     WorkflowOptions workflowOptions =
         new WorkflowOptions.Builder()
-            .setTaskList(TASK_LIST)
-            .setExecutionStartToCloseTimeout(Duration.ofSeconds(30))
+            .setTaskList(HelloCancellation.TASK_LIST)
+            .setExecutionStartToCloseTimeout(Duration.ofDays(30))
             .build();
-    GreetingWorkflow workflow =
-        workflowClient.newWorkflowStub(GreetingWorkflow.class, workflowOptions);
-    // Execute a workflow waiting for it to complete.
-    String greeting = workflow.getGreeting("World");
-    System.out.println(greeting);
+    // NOTE: strongly typed workflow stub doesn't cancel method.
+    WorkflowStub client =
+        workflowClient.newUntypedWorkflowStub("GreetingWorkflow::getGreeting", workflowOptions);
+
+    client.start("World");
+
+    // issue cancellation request. This will trigger a CancellationException on the workflow.
+    client.cancel();
+
+    try {
+      client.getResult(String.class);
+    } catch (CancellationException ignored) {
+      System.out.println("workflow cancelled. Cancellation exception thrown");
+    }
+
+    System.out.println(activities.getInvocations());
     System.exit(0);
   }
 }

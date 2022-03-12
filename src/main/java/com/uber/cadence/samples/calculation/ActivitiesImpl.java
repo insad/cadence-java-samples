@@ -15,8 +15,22 @@
  *  permissions and limitations under the License.
  */
 
-package com.uber.cadence.samples.common;
+package com.uber.cadence.samples.calculation;
 
-public class SampleConstants {
-  public static final String DOMAIN = "samples-domain";
+@SuppressWarnings("ALL")
+public class ActivitiesImpl implements Activities {
+
+  @Override
+  public long multiple(final long a, final long b) {
+    long c = (a * b);
+
+    try {
+      Thread.sleep(5 * 1000);
+    } catch (InterruptedException e) {
+      System.out.println("thread.Sleep exception:" + e.getMessage());
+    }
+    System.out.println(
+        "After an expensive multiplication calculation... " + a + " * " + b + " = " + c);
+    return c;
+  }
 }

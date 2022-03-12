@@ -15,21 +15,20 @@
  *  permissions and limitations under the License.
  */
 
-package com.uber.cadence.samples.bookingsaga;
+package com.uber.cadence.samples.calculation;
 
 import static com.uber.cadence.samples.common.SampleConstants.DOMAIN;
 
 import com.uber.cadence.client.WorkflowClient;
 import com.uber.cadence.client.WorkflowClientOptions;
-import com.uber.cadence.client.WorkflowException;
 import com.uber.cadence.serviceclient.ClientOptions;
 import com.uber.cadence.serviceclient.WorkflowServiceTChannel;
 import com.uber.cadence.worker.Worker;
 import com.uber.cadence.worker.WorkerFactory;
 
-public class TripBookingSaga {
+public class WorkflowWorker {
 
-  static final String TASK_LIST = "TripBooking";
+  static final String DEFAULT_TASK_LIST = "calculation-default-tasklist";
 
   @SuppressWarnings("CatchAndPrintStackTrace")
   public static void main(String[] args) {
@@ -38,33 +37,16 @@ public class TripBookingSaga {
         WorkflowClient.newInstance(
             new WorkflowServiceTChannel(ClientOptions.defaultInstance()),
             WorkflowClientOptions.newBuilder().setDomain(DOMAIN).build());
+
     // Get worker to poll the common task list.
     WorkerFactory factory = WorkerFactory.newInstance(workflowClient);
-    final Worker workerForCommonTaskList = factory.newWorker(TASK_LIST);
-    workerForCommonTaskList.registerWorkflowImplementationTypes(TripBookingWorkflowImpl.class);
-    TripBookingActivities tripBookingActivities = new TripBookingActivitiesImpl();
-    workerForCommonTaskList.registerActivitiesImplementations(tripBookingActivities);
+    final Worker workerForCommonTaskList = factory.newWorker(DEFAULT_TASK_LIST);
+    workerForCommonTaskList.registerWorkflowImplementationTypes(WorkflowMethodsImpl.class);
+    Activities activities = new ActivitiesImpl();
+    workerForCommonTaskList.registerActivitiesImplementations(activities);
 
     // Start all workers created by this factory.
     factory.start();
-    System.out.println("Worker started for task list: " + TASK_LIST);
-
-    // now we can start running instances of our saga - its state will be persisted
-    TripBookingWorkflow trip1 = workflowClient.newWorkflowStub(TripBookingWorkflow.class);
-    try {
-      trip1.bookTrip("trip1");
-    } catch (WorkflowException e) {
-      // Expected
-      e.printStackTrace();
-    }
-
-    try {
-      TripBookingWorkflow trip2 = workflowClient.newWorkflowStub(TripBookingWorkflow.class);
-      trip2.bookTrip("trip2");
-    } catch (WorkflowException e) {
-      e.printStackTrace();
-    }
-
-    System.exit(0);
+    System.out.println("Worker started for task list: " + DEFAULT_TASK_LIST);
   }
 }

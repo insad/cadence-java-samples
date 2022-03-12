@@ -19,20 +19,28 @@ package com.uber.cadence.samples.hello;
 
 import static com.uber.cadence.samples.common.SampleConstants.DOMAIN;
 
+import com.uber.cadence.QueryConsistencyLevel;
+import com.uber.cadence.WorkflowExecution;
+import com.uber.cadence.client.QueryOptions;
 import com.uber.cadence.client.WorkflowClient;
 import com.uber.cadence.client.WorkflowClientOptions;
 import com.uber.cadence.client.WorkflowOptions;
+import com.uber.cadence.client.WorkflowStub;
 import com.uber.cadence.serviceclient.ClientOptions;
 import com.uber.cadence.serviceclient.WorkflowServiceTChannel;
 import com.uber.cadence.worker.Worker;
 import com.uber.cadence.worker.WorkerFactory;
 import com.uber.cadence.workflow.QueryMethod;
+import com.uber.cadence.workflow.SignalMethod;
 import com.uber.cadence.workflow.Workflow;
 import com.uber.cadence.workflow.WorkflowMethod;
 import java.time.Duration;
 
-/** Demonstrates query capability. Requires a local instance of Cadence server to be running. */
-public class HelloQuery {
+/**
+ * Demonstrates consistent query capability. Requires a local instance of Cadence server of version
+ * >= 0.22.0 to be running.
+ */
+public class HelloConsistentQuery {
 
   static final String TASK_LIST = "HelloQuery";
 
@@ -41,28 +49,34 @@ public class HelloQuery {
     @WorkflowMethod
     void createGreeting(String name);
 
+    @SignalMethod
+    void increase();
+
     /** Returns greeting as a query value. */
     @QueryMethod
-    String queryGreeting();
+    int getCounter();
   }
 
   /** GreetingWorkflow implementation that updates greeting after sleeping for 5 seconds. */
   public static class GreetingWorkflowImpl implements GreetingWorkflow {
 
-    private String greeting;
+    private int counter;
 
     @Override
     public void createGreeting(String name) {
-      greeting = "Hello " + name + "!";
       // Workflow code always uses WorkflowThread.sleep
       // and Workflow.currentTimeMillis instead of standard Java ones.
-      Workflow.sleep(Duration.ofSeconds(2));
-      greeting = "Bye " + name + "!";
+      Workflow.sleep(Duration.ofDays(2));
     }
 
     @Override
-    public String queryGreeting() {
-      return greeting;
+    public void increase() {
+      this.counter++;
+    }
+
+    @Override
+    public int getCounter() {
+      return counter;
     }
   }
 
@@ -87,18 +101,47 @@ public class HelloQuery {
             .setTaskList(TASK_LIST)
             .setExecutionStartToCloseTimeout(Duration.ofSeconds(30))
             .build();
-    GreetingWorkflow workflow =
-        workflowClient.newWorkflowStub(GreetingWorkflow.class, workflowOptions);
-    // Start workflow asynchronously to not use another thread to query.
-    WorkflowClient.start(workflow::createGreeting, "World");
-    // After start for getGreeting returns, the workflow is guaranteed to be started.
-    // So we can send a signal to it using workflow stub.
+    final WorkflowStub workflow =
+        workflowClient.newUntypedWorkflowStub("GreetingWorkflow::createGreeting", workflowOptions);
 
-    System.out.println(workflow.queryGreeting()); // Should print Hello...
-    // Note that inside a workflow only WorkflowThread.sleep is allowed. Outside
-    // WorkflowThread.sleep is not allowed.
-    Thread.sleep(2500);
-    System.out.println(workflow.queryGreeting()); // Should print Bye ...
+    // Start workflow asynchronously to not use another thread to query.
+    final WorkflowExecution wf = workflow.start("World");
+    System.out.println("started workflow " + wf.getWorkflowId() + ", " + wf.getRunId());
+    System.out.println("initial value after started");
+    System.out.println(
+        workflow.queryWithOptions(
+            "GreetingWorkflow::getCounter",
+            new QueryOptions.Builder()
+                .setQueryConsistencyLevel(QueryConsistencyLevel.STRONG)
+                .build(),
+            Integer.class,
+            Integer.class)); // Should print 0
+
+    // Now we can send a signal to it using workflow stub.
+    workflow.signal("GreetingWorkflow::increase");
+    System.out.println("after increase 1 time");
+    System.out.println(
+        workflow.queryWithOptions(
+            "GreetingWorkflow::getCounter",
+            new QueryOptions.Builder()
+                .setQueryConsistencyLevel(QueryConsistencyLevel.STRONG)
+                .build(),
+            Integer.class,
+            Integer.class)); // Should print 1
+
+    workflow.signal("GreetingWorkflow::increase");
+    workflow.signal("GreetingWorkflow::increase");
+    workflow.signal("GreetingWorkflow::increase");
+    workflow.signal("GreetingWorkflow::increase");
+    System.out.println("after increase 1+4 times");
+    System.out.println(
+        workflow.queryWithOptions(
+            "GreetingWorkflow::getCounter",
+            new QueryOptions.Builder()
+                .setQueryConsistencyLevel(QueryConsistencyLevel.STRONG)
+                .build(),
+            Integer.class,
+            Integer.class)); // Should print 5
     System.exit(0);
   }
 }
